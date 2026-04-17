@@ -1,0 +1,486 @@
+// Prisma Schema for Accounting Firm Management System
+// Version: MVP Draft
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== USERS & AUTH ====================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  role          Role      @default(CLIENT)
+  name          String
+  phone         String?
+  avatar        String?
+  isActive      Boolean   @default(true) @map("is_active")
+  mfaEnabled    Boolean   @default(false) @map("mfa_enabled")
+  mfaSecret     String?   @map("mfa_secret")
+  lastLogin     DateTime? @map("last_login")
+  loginAttempts Int       @default(0) @map("login_attempts")
+  lockedUntil   DateTime? @map("locked_until")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  staff           Staff?
+  clientCompanies Company[]        @relation("ClientUser")
+  auditLogs       AuditLog[]
+  chatMessages    ChatMessage[]
+  notifications   Notification[]
+  uploadedFiles   UploadedFile[]
+
+  @@map("users")
+}
+
+enum Role {
+  ADMIN
+  STAFF
+  CLIENT
+}
+
+model Staff {
+  id              String   @id @default(cuid())
+  userId          String   @unique @map("user_id")
+  employeeCode    String   @unique @map("employee_code")
+  department      String?
+  position        String?
+  maxClients      Int      @default(20) @map("max_clients")
+  hireDate        DateTime @default(now()) @map("hire_date")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedCompanies  Company[]           @relation("AssignedStaff")
+  performanceRecords StaffPerformance[]
+  escalatedChats     ChatMessage[]       @relation("EscalatedTo")
+  tasks              Task[]
+  invoicesCreated    Invoice[]           @relation("CreatedBy")
+  invoicesApproved   Invoice[]           @relation("ApprovedBy")
+
+  @@map("staff")
+}
+
+model StaffPerformance {
+  id                     String   @id @default(cuid())
+  staffId                String   @map("staff_id")
+  period                 String   // Format: YYYY-MM
+  clientsHandled         Int      @default(0) @map("clients_handled")
+  tasksCompleted         Int      @default(0) @map("tasks_completed")
+  tasksOnTimePercentage  Float    @default(0) @map("tasks_on_time_percentage")
+  accuracyScore          Float    @default(0) @map("accuracy_score")
+  clientSatisfaction     Float    @default(0) @map("client_satisfaction")
+  avgResponseTimeHours   Float    @default(0) @map("avg_response_time_hours")
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  // Relations
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, period])
+  @@map("staff_performance")
+}
+
+// ==================== COMPANIES & CLIENTS ====================
+
+model Company {
+  id                String   @id @default(cuid())
+  name              String
+  taxId             String?  @map("tax_id") // Encrypted
+  address           String?
+  phone             String?
+  email             String?
+  website           String?
+  businessType      String?  @map("business_type")
+  serviceTier       ServiceTier @default(BASIC) @map("service_tier")
+  vatRegistered     Boolean  @default(false) @map("vat_registered")
+  fiscalYearEnd     String   @default("12") @map("fiscal_year_end") // Month number
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  // Foreign Keys
+  clientUserId      String   @map("client_user_id")
+  assignedStaffId   String?  @map("assigned_staff_id")
+
+  // Relations
+  clientUser        User           @relation("ClientUser", fields: [clientUserId], references: [id])
+  assignedStaff     Staff?         @relation("AssignedStaff", fields: [assignedStaffId], references: [id])
+  bankAccounts      BankAccount[]
+  transactions      Transaction[]
+  invoices          Invoice[]
+  taxFilings        TaxFiling[]
+  uploadedFiles     UploadedFile[]
+  settings          CompanySettings?
+
+  @@map("companies")
+}
+
+enum ServiceTier {
+  BASIC
+  STANDARD
+  PREMIUM
+}
+
+model CompanySettings {
+  id                    String   @id @default(cuid())
+  companyId             String   @unique @map("company_id")
+  maxTransactionsPerAccount Int  @default(400) @map("max_transactions_per_account")
+  vatThreshold          Float    @default(1800000) @map("vat_threshold")
+  alertThresholdPercent Int      @default(85) @map("alert_threshold_percent")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("company_settings")
+}
+
+model BankAccount {
+  id                  String   @id @default(cuid())
+  companyId           String   @map("company_id")
+  bankName            String   @map("bank_name")
+  bankCode            String?  @map("bank_code")
+  accountNumber       String   @map("account_number") // Encrypted - show only last 4
+  accountName         String   @map("account_name") // Encrypted
+  accountType         AccountType @default(SAVINGS) @map("account_type")
+  isPrimary           Boolean  @default(false) @map("is_primary")
+  isActive            Boolean  @default(true) @map("is_active")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@map("bank_accounts")
+}
+
+enum AccountType {
+  SAVINGS
+  CURRENT
+  FIXED_DEPOSIT
+}
+
+// ==================== TRANSACTIONS ====================
+
+model Transaction {
+  id              String            @id @default(cuid())
+  companyId       String            @map("company_id")
+  bankAccountId   String?           @map("bank_account_id")
+  type            TransactionType
+  category        String
+  subCategory     String?           @map("sub_category")
+  amount          Float
+  vatAmount       Float             @default(0) @map("vat_amount")
+  netAmount       Float             @map("net_amount")
+  description     String?
+  reference       String?
+  vendorName      String?           @map("vendor_name")
+  vendorTaxId     String?           @map("vendor_tax_id")
+  transactionDate DateTime          @map("transaction_date")
+  documentType    DocumentType      @default(RECEIPT) @map("document_type")
+  status          TransactionStatus @default(PENDING)
+  ocrConfidence   Float?            @map("ocr_confidence")
+  aiSuggestion    String?           @map("ai_suggestion")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  // Relations
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  bankAccount   BankAccount?   @relation(fields: [bankAccountId], references: [id])
+  uploadedFiles UploadedFile[]
+
+  @@map("transactions")
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+}
+
+enum DocumentType {
+  RECEIPT
+  CASH_BILL
+  TAX_INVOICE
+  QUOTATION
+  OTHER
+}
+
+enum TransactionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  NEEDS_REVIEW
+}
+
+// ==================== INVOICES & BILLING ====================
+
+model BillingCompany {
+  id        String   @id @default(cuid())
+  name      String
+  taxId     String   @map("tax_id")
+  address   String
+  phone     String?
+  email     String?
+  logo      String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  invoices Invoice[]
+
+  @@map("billing_companies")
+}
+
+model Invoice {
+  id                String        @id @default(cuid())
+  invoiceNumber     String        @unique @map("invoice_number")
+  companyId         String        @map("company_id")
+  billingCompanyId  String        @map("billing_company_id")
+  createdById       String        @map("created_by_id")
+  approvedById      String?       @map("approved_by_id")
+  issueDate         DateTime      @map("issue_date")
+  dueDate           DateTime      @map("due_date")
+  subtotal          Float
+  vatAmount         Float         @default(0) @map("vat_amount")
+  totalAmount       Float         @map("total_amount")
+  status            InvoiceStatus @default(DRAFT)
+  includeTaxInvoice Boolean       @default(false) @map("include_tax_invoice")
+  taxInvoiceNumber  String?       @map("tax_invoice_number")
+  notes             String?
+  paidAt            DateTime?     @map("paid_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  company        Company        @relation(fields: [companyId], references: [id])
+  billingCompany BillingCompany @relation(fields: [billingCompanyId], references: [id])
+  createdBy      Staff          @relation("CreatedBy", fields: [createdById], references: [id])
+  approvedBy     Staff?         @relation("ApprovedBy", fields: [approvedById], references: [id])
+  items          InvoiceItem[]
+
+  @@map("invoices")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model InvoiceItem {
+  id          String   @id @default(cuid())
+  invoiceId   String   @map("invoice_id")
+  description String
+  quantity    Int      @default(1)
+  unitPrice   Float    @map("unit_price")
+  amount      Float
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_items")
+}
+
+// ==================== TAX FILING ====================
+
+model TaxFiling {
+  id            String          @id @default(cuid())
+  companyId     String          @map("company_id")
+  taxType       TaxType         @map("tax_type")
+  period        String          // Format: YYYY-MM or YYYY
+  dueDate       DateTime        @map("due_date")
+  filedDate     DateTime?       @map("filed_date")
+  amount        Float           @default(0)
+  status        TaxFilingStatus @default(PENDING)
+  reference     String?
+  notes         String?
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, taxType, period])
+  @@map("tax_filings")
+}
+
+enum TaxType {
+  VAT        // ภ.พ.30
+  WHT        // ภ.ง.ด.3, 53
+  CIT        // ภ.ง.ด.50, 51
+  PIT        // ภ.ง.ด.1
+}
+
+enum TaxFilingStatus {
+  PENDING
+  IN_PROGRESS
+  FILED
+  PAID
+  OVERDUE
+}
+
+// ==================== TASKS ====================
+
+model Task {
+  id          String     @id @default(cuid())
+  staffId     String     @map("staff_id")
+  companyId   String?    @map("company_id")
+  title       String
+  description String?
+  priority    Priority   @default(MEDIUM)
+  status      TaskStatus @default(TODO)
+  dueDate     DateTime?  @map("due_date")
+  completedAt DateTime?  @map("completed_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@map("tasks")
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// ==================== FILES ====================
+
+model UploadedFile {
+  id            String     @id @default(cuid())
+  userId        String     @map("user_id")
+  companyId     String?    @map("company_id")
+  transactionId String?    @map("transaction_id")
+  fileName      String     @map("file_name")
+  fileSize      Int        @map("file_size")
+  mimeType      String     @map("mime_type")
+  storagePath   String     @map("storage_path")
+  purpose       FilePurpose @default(DOCUMENT)
+  ocrProcessed  Boolean    @default(false) @map("ocr_processed")
+  ocrResult     String?    @map("ocr_result") // JSON
+  status        FileStatus @default(PENDING)
+  createdAt     DateTime   @default(now()) @map("created_at")
+
+  // Relations
+  user        User         @relation(fields: [userId], references: [id])
+  company     Company?     @relation(fields: [companyId], references: [id])
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@map("uploaded_files")
+}
+
+enum FilePurpose {
+  RECEIPT
+  INVOICE
+  CONTRACT
+  TAX_DOCUMENT
+  DOCUMENT
+  OTHER
+}
+
+enum FileStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ==================== CHAT & AI ====================
+
+model ChatMessage {
+  id              String      @id @default(cuid())
+  userId          String      @map("user_id")
+  sessionId       String      @map("session_id")
+  role            ChatRole
+  content         String
+  wasEscalated    Boolean     @default(false) @map("was_escalated")
+  escalatedToId   String?     @map("escalated_to_id")
+  escalatedAt     DateTime?   @map("escalated_at")
+  resolvedAt      DateTime?   @map("resolved_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  // Relations
+  user        User   @relation(fields: [userId], references: [id])
+  escalatedTo Staff? @relation("EscalatedTo", fields: [escalatedToId], references: [id])
+
+  @@map("chat_messages")
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+// ==================== NOTIFICATIONS ====================
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String           @map("user_id")
+  title     String
+  message   String
+  type      NotificationType
+  isRead    Boolean          @default(false) @map("is_read")
+  link      String?
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+enum NotificationType {
+  INFO
+  WARNING
+  ERROR
+  SUCCESS
+  TASK
+  INVOICE
+  TAX
+}
+
+// ==================== AUDIT LOG ====================
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  details      String?  // JSON
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
